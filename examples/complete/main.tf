@@ -11,7 +11,7 @@ provider "tencentcloud" {
 data "tencentcloud_user_info" "this" {}
 
 module "cos_bucket" {
-  source = "../../"
+  source = "../../modules/complete"
 
   bucket_name = local.bucket
   appid = data.tencentcloud_user_info.this.app_id

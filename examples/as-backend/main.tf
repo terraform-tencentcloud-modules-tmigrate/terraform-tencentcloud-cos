@@ -3,7 +3,7 @@ provider tencentcloud {
 }
 
 module "cos-backend" {
-  source = "../../"
+  source = "../../modules/complete"
 
   tags = {
     owner = "multi-cloud"

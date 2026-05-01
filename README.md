@@ -1,4 +1,4 @@
-# TencentCloud COS Module for Terraform
+# (Deprecated) TencentCloud COS Module for Terraform
 
 ## terraform-tencentcloud-cos
 

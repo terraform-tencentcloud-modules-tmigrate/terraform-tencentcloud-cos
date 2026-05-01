@@ -2,11 +2,22 @@ data "tencentcloud_user_info" "this" {}
 
 
 locals {
+  //TODO naming convention
   bucket_name = var.bucket_name
   bucket_id = join("", tencentcloud_cos_bucket.cos.*.id)
   bucket_url = join("", tencentcloud_cos_bucket.cos.*.cos_bucket_url)
+
+  certs = distinct([for cert in try(var.bucket.origin_domain_rules, []): try(cert.cert_id, "") if try(cert.cert_id, "") != ""])
+  cert_map = {for cert in local.certs: cert => cert}
+
+  ssl_cert_map = { for k, certs in data.tencentcloud_ssl_certificates.all: k => certs.certificates[0].cert }
+  ssl_key_map = { for k, certs in data.tencentcloud_ssl_certificates.all: k => certs.certificates[0].key}
 }
 
+data "tencentcloud_ssl_certificates" "all" {
+  for_each = local.cert_map
+  id = each.value
+}
 
 resource "tencentcloud_cos_bucket" "cos" {
   count = var.create ? 1 : 0
@@ -103,7 +114,9 @@ resource "tencentcloud_cos_bucket" "cos" {
       follow_redirection  = lookup(origin_pull_rules.value, "follow_redirection", false)
       prefix              = lookup(origin_pull_rules.value, "prefix", null)
       protocol            = lookup(origin_pull_rules.value, "protocol", null)
-      sync_back_to_source = lookup(origin_pull_rules.value, "sync_back_to_source", false)
+      sync_back_to_source = lookup(origin_pull_rules.value, "back_to_source_mode", null)  == null ? lookup(origin_pull_rules.value, "sync_back_to_source", false) : null
+      back_to_source_mode = lookup(origin_pull_rules.value, "back_to_source_mode", null) # "Proxy", "Mirror", "Redirect"
+      http_redirect_code = lookup(origin_pull_rules.value, "back_to_source_mode", null) == "Redirect" ?  lookup(origin_pull_rules.value, "http_redirect_code", "302") : null
     }
   }
 
@@ -133,6 +146,22 @@ resource "tencentcloud_cos_bucket" "cos" {
     content {
       error_document = lookup(website.value, "error_document", null)
       index_document = lookup(website.value, "index_document", null)
+      redirect_all_requests_to = lookup(website.value, "redirect_all_requests_to", null)
+      dynamic routing_rules {
+        for_each = lookup(website.value, "routing_rules", []) == [] ? []: [1]
+        content {
+          dynamic "rules" {
+            for_each = lookup(website.value, "routing_rules", [])
+            content {
+              condition_error_code        = lookup(rules.value, "condition_error_code", "")
+              condition_prefix            = lookup(rules.value, "condition_prefix", "")
+              redirect_protocol           = lookup(rules.value, "redirect_protocol", "")
+              redirect_replace_key_prefix = lookup(rules.value, "redirect_replace_key_prefix", "")
+              redirect_replace_key        = lookup(rules.value, "redirect_replace_key", "")
+            }
+          }
+        }
+      }
     }
   }
 
@@ -142,8 +171,25 @@ resource "tencentcloud_cos_bucket" "cos" {
 
 resource "tencentcloud_cam_policy" "cam_policies" { // https://cloud.tencent.com/document/product/436/31923
   for_each = var.cam_policies
+  //TODO
   name        = each.value.name // ForceNew
   document = each.value.document
+#  document    = <<EOF
+#{
+#    "version": "2.0",
+#    "statement": [
+#        {
+#            "effect": "allow",
+#            "action": [
+#                "cos:*"
+#            ],
+#            "resource": [
+#                "qcs::cos::uid/${data.tencentcloud_user_info.this.app_id}:${each.value.bucket_name}-${data.tencentcloud_user_info.this.app_id}/*"
+#            ]
+#        }
+#    ]
+#}
+#EOF
   description = each.value.description
 }
 
@@ -171,4 +217,21 @@ resource "tencentcloud_cos_bucket_policy" "bucket_policies" {
       "version" : "2.0"
     }
   )
+}
+
+resource "tencentcloud_cos_bucket_domain_certificate_attachment" "cert_attachments" {
+  count = length(try(var.bucket.origin_domain_rules, []))
+  bucket = tencentcloud_cos_bucket.cos[0].id
+
+  domain_certificate {
+    domain = lookup(var.bucket.origin_domain_rules[count.index], "domain", "")
+    certificate {
+      cert_type = lookup(var.bucket.origin_domain_rules[count.index], "cert_type", "")
+      custom_cert {
+        cert = lookup(local.ssl_cert_map, lookup(var.bucket.origin_domain_rules[count.index], "cert_id", "NOT_SPECIFIED"), lookup(var.bucket.origin_domain_rules[count.index], "cert", ""))
+        private_key = lookup(local.ssl_key_map, lookup(var.bucket.origin_domain_rules[count.index], "cert_id", "NOT_SPECIFIED"), lookup(var.bucket.origin_domain_rules[count.index], "private_key", ""))
+        cert_id = lookup(var.bucket.origin_domain_rules[count.index], "cert_id", null)
+      }
+    }
+  }
 }
